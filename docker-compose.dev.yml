@@ -1,0 +1,52 @@
+version: '3.9'
+
+# =============================================================================
+# AI DevSecOps Platform — Development Overrides
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+# =============================================================================
+
+services:
+
+  postgres:
+    ports:
+      - "5432:5432"   # expose for local DB clients (DBeaver, psql, etc.)
+
+  redis:
+    ports:
+      - "6379:6379"   # expose for local Redis inspection
+
+  backend:
+    volumes:
+      - ./backend:/app          # live code mount for hot-reload
+      - scan_uploads:/tmp/devsecops_uploads
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"             # direct backend access (bypasses nginx)
+    environment:
+      DEBUG: "true"
+      ENVIRONMENT: development
+
+  celery-worker:
+    volumes:
+      - ./backend:/app
+      - scan_uploads:/tmp/devsecops_uploads
+    command: celery -A app.workers.celery_app worker --loglevel=debug --concurrency=1 -Q scans,default
+
+  # In dev, replace the built frontend image with the Vite dev server
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules       # preserve node_modules from image
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "5173:5173"             # Vite dev server (with HMR)
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+
+  # No nginx needed in dev — frontend proxies /api to backend via Vite config
+  nginx:
+    profiles:
+      - nginx-dev               # opt-in; normally skipped in dev

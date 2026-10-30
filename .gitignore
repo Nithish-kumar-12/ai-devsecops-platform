@@ -1,0 +1,67 @@
+.env
+*.pyc
+__pycache__/
+.pytest_cache/
+htmlcov/
+.coverage
+*.egg-info/
+dist/
+build/
+*.log
+
+# Frontend
+node_modules/
+frontend/dist/
+
+# Scan artifacts
+/tmp/devsecops_uploads/
+*.zip
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes (local)
+postgres_data/
+redis_data/
+
+# Test DB
+test_devsecops.db
+
+# Python virtual environments
+.venv/
+venv/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets and local configuration
+.env.*
+!.env.example
+
+# Generated reports and test artifacts
+.pytest_cache/
+playwright-report/
+test-results/
+
+# Backend environment and dependencies
+backend/.env
+backend/.venv/
+backend/venv/
+
+# Nested dependencies
+**/node_modules/
+
+# Juice Shop local keys and dependencies
+juice-shop/encryptionkeys/
+juice-shop/ctf.key
+
+# Local OWASP Juice Shop test application
+juice-shop/

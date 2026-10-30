@@ -1,0 +1,17 @@
+# =============================================================================
+# Frontend — Development Dockerfile
+# Runs the Vite dev server with hot module replacement.
+# Used via docker-compose.dev.yml override.
+# =============================================================================
+
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+RUN npm ci --prefer-offline
+
+# Source code is mounted as a volume at runtime (see docker-compose.dev.yml)
+EXPOSE 5173
+
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

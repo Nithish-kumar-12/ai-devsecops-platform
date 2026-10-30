@@ -1,0 +1,143 @@
+name: DevSecOps Security Gate
+
+# =============================================================================
+# Reusable GitHub Actions workflow — consumers copy this into their own repo.
+# Required secrets in the consuming repository:
+#   DEVSECOPS_PLATFORM_URL   e.g. https://your-platform.example.com
+#   DEVSECOPS_PLATFORM_TOKEN  JWT token with developer role for that project
+#   DEVSECOPS_PROJECT_ID      UUID of the project configured in the platform
+# =============================================================================
+
+on:
+  push:
+    branches: [main, develop, "release/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      scan_type:
+        description: "Scan type"
+        required: false
+        default: "full"
+        type: choice
+        options: [full, sast, sca, secret, iac]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Security Gate — submit source to the platform and block on gate result
+  # ---------------------------------------------------------------------------
+  security-gate:
+    name: Security Gate Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # full history for accurate secret detection
+
+      - name: Create source archive
+        run: |
+          zip -r source.zip . \
+            -x "*.git*" \
+            -x "node_modules/*" \
+            -x ".venv/*" \
+            -x "__pycache__/*" \
+            -x "*.pyc" \
+            -x "dist/*" \
+            -x "build/*"
+          echo "Archive size: $(du -sh source.zip | cut -f1)"
+
+      - name: Submit scan to DevSecOps Platform
+        id: submit
+        env:
+          PLATFORM_URL: ${{ secrets.DEVSECOPS_PLATFORM_URL }}
+          PLATFORM_TOKEN: ${{ secrets.DEVSECOPS_PLATFORM_TOKEN }}
+          PROJECT_ID: ${{ secrets.DEVSECOPS_PROJECT_ID }}
+          SCAN_TYPE: ${{ github.event.inputs.scan_type || 'full' }}
+        run: |
+          RESPONSE=$(curl -sf -X POST "${PLATFORM_URL}/api/v1/scans/github-action" \
+            -H "Authorization: Bearer ${PLATFORM_TOKEN}" \
+            -F "project_id=${PROJECT_ID}" \
+            -F "scan_type=${SCAN_TYPE}" \
+            -F "source=@source.zip" \
+            -F "commit_sha=${{ github.sha }}" \
+            -F "branch=${{ github.ref_name }}" \
+            -F "repository=${{ github.repository }}")
+
+          echo "Response: $RESPONSE"
+          SCAN_ID=$(echo "$RESPONSE" | jq -r '.scan_id')
+
+          if [ -z "$SCAN_ID" ] || [ "$SCAN_ID" = "null" ]; then
+            echo "❌ Failed to submit scan — no scan_id returned"
+            exit 1
+          fi
+
+          echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
+          echo "✅ Scan submitted: $SCAN_ID"
+
+      - name: Poll for scan completion
+        env:
+          PLATFORM_URL: ${{ secrets.DEVSECOPS_PLATFORM_URL }}
+          PLATFORM_TOKEN: ${{ secrets.DEVSECOPS_PLATFORM_TOKEN }}
+          SCAN_ID: ${{ steps.submit.outputs.scan_id }}
+        run: |
+          echo "Polling scan $SCAN_ID..."
+          for i in $(seq 1 90); do
+            STATUS=$(curl -sf "${PLATFORM_URL}/api/v1/scans/${SCAN_ID}/status" \
+              -H "Authorization: Bearer ${PLATFORM_TOKEN}" | jq -r '.status')
+
+            echo "  [attempt $i/90] status: $STATUS"
+
+            if [ "$STATUS" = "completed" ] || [ "$STATUS" = "partial" ]; then
+              echo "✅ Scan finished: $STATUS"
+              break
+            elif [ "$STATUS" = "failed" ]; then
+              echo "❌ Scan failed"
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+          if [ "$STATUS" = "pending" ] || [ "$STATUS" = "running" ]; then
+            echo "❌ Scan timed out after 15 minutes"
+            exit 1
+          fi
+
+      - name: Evaluate security gate
+        env:
+          PLATFORM_URL: ${{ secrets.DEVSECOPS_PLATFORM_URL }}
+          PLATFORM_TOKEN: ${{ secrets.DEVSECOPS_PLATFORM_TOKEN }}
+          SCAN_ID: ${{ steps.submit.outputs.scan_id }}
+        run: |
+          GATE=$(curl -sf "${PLATFORM_URL}/api/v1/scans/${SCAN_ID}/gate-result" \
+            -H "Authorization: Bearer ${PLATFORM_TOKEN}")
+
+          echo "Gate result:"
+          echo "$GATE" | jq .
+
+          PASSED=$(echo "$GATE" | jq -r '.passed')
+
+          if [ "$PASSED" = "false" ]; then
+            echo ""
+            echo "❌ SECURITY GATE FAILED — violations:"
+            echo "$GATE" | jq -r '.violations[] | "  • " + .'
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ SECURITY GATE PASSED"
+
+      - name: Post summary
+        if: always()
+        env:
+          PLATFORM_URL: ${{ secrets.DEVSECOPS_PLATFORM_URL }}
+          SCAN_ID: ${{ steps.submit.outputs.scan_id }}
+        run: |
+          echo "### 🛡️ DevSecOps Security Gate" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Scan ID**: \`${SCAN_ID}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Report**: [View in Platform](${PLATFORM_URL}/scans/${SCAN_ID})" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commit**: \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
